@@ -21,15 +21,35 @@ import android.os.IBinder
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.update
 import java.io.IOException
 
+data class RecordState(
+    val isRecording: Boolean = false,
+    val startRecording: Long = 0L
+)
+
+fun timeFormatter(time: Long): String {
+    val timeInSeconds = time / 1000
+    val minutes = timeInSeconds / 60
+    val seconds = timeInSeconds % 60
+    return "${minutes.toString().padStart(2,'0')}:${seconds.toString().padStart(2,'0')}"
+}
+
 class ScreenRecordingService : Service() {
+    companion object {
+        val _recordState = MutableStateFlow(RecordState())
+        val recordState: StateFlow<RecordState> = _recordState
+    }
+
     private var mediaProjection: MediaProjection? = null
     private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
     private val mediaProjectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            Log.d("ScreenRecordingService", "MediaProjection stopped")
+            _recordState.update { it.copy(isRecording = false) }
             stopSelf()
         }
     }
@@ -53,14 +73,9 @@ class ScreenRecordingService : Service() {
         if (resultCode == Activity.RESULT_OK && data != null) {
             val mediaProjectionManager =
                 getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            try {
-                mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
-                mediaProjection?.registerCallback(mediaProjectionCallback, null)
-                startRecording()
-            } catch (e: Exception) {
-                Log.e("ScreenRecordingService", "Failed to initialize MediaProjection", e)
-                stopSelf()
-            }
+            mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+            mediaProjection?.registerCallback(mediaProjectionCallback, null)
+            startRecording()
         } else {
             Log.e("ScreenRecordingService", "Invalid MediaProjection data")
             stopSelf()
@@ -93,93 +108,54 @@ class ScreenRecordingService : Service() {
             setVideoSource(MediaRecorder.VideoSource.SURFACE)
 
             if (hasAudioPermission) {
-                try {
-                    setAudioSource(MediaRecorder.AudioSource.MIC)
-                } catch (e: IllegalStateException) {
-                    Log.e("ScreenRecordingService", "Failed to set audio source", e)
-                }
+                setAudioSource(MediaRecorder.AudioSource.MIC)
             }
 
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setOutputFile("${Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)}/screen_recording_${System.currentTimeMillis()}.mp4")
-
-            try {
-                setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            } catch (e: IllegalStateException) {
-                Log.e("ScreenRecordingService", "Failed to set video encoder", e)
-                stopSelf()
-                return
-            }
+            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
 
             if (hasAudioPermission) {
-                try {
-                    setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                } catch (e: IllegalStateException) {
-                    Log.e("ScreenRecordingService", "Failed to set audio encoder", e)
-                }
+                setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
             }
 
-            try {
-                setVideoEncodingBitRate(8 * 1000 * 1000)
-                setVideoFrameRate(30)
-                val displayMetrics = resources.displayMetrics
-                setVideoSize(displayMetrics.widthPixels, displayMetrics.heightPixels)
-            } catch (e: IllegalStateException) {
-                Log.e("ScreenRecordingService", "Failed to set video parameters", e)
-                stopSelf()
-                return
-            }
-
-            try {
-                prepare()
-            } catch (e: IOException) {
-                Log.e("ScreenRecordingService", "MediaRecorder prepare failed", e)
-                stopSelf()
-                return
-            }
+            setVideoEncodingBitRate(8 * 1000 * 1000)
+            setVideoFrameRate(30)
+            val displayMetrics = resources.displayMetrics
+            setVideoSize(displayMetrics.widthPixels, displayMetrics.heightPixels)
+            prepare()
         }
 
         val displayMetrics = resources.displayMetrics
-        try {
-            virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "ScreenRecorder",
-                displayMetrics.widthPixels,
-                displayMetrics.heightPixels,
-                displayMetrics.densityDpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                mediaRecorder?.surface,
-                null,
-                null
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "ScreenRecorder",
+            displayMetrics.widthPixels,
+            displayMetrics.heightPixels,
+            displayMetrics.densityDpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            mediaRecorder?.surface,
+            null,
+            null
+        )
+        _recordState.update {
+            it.copy(
+                isRecording = true,
+                startRecording = System.currentTimeMillis()
             )
-        } catch (e: Exception) {
-            Log.e("ScreenRecordingService", "Failed to create VirtualDisplay", e)
-            stopSelf()
-            return
         }
-
-        try {
-            mediaRecorder?.start()
-        } catch (e: IllegalStateException) {
-            Log.e("ScreenRecordingService", "MediaRecorder start failed", e)
-            stopSelf()
-        }
+        mediaRecorder?.start()
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        try {
-            mediaRecorder?.stop()
-        } catch (e: Exception) {
-            Log.e("ScreenRecordingService", "Error stopping MediaRecorder", e)
+        _recordState.update {
+            it.copy(isRecording = false, startRecording = 0L)
         }
+        mediaRecorder?.stop()
         mediaRecorder?.release()
         virtualDisplay?.release()
         mediaProjection?.unregisterCallback(mediaProjectionCallback)
-        try {
-            mediaProjection?.stop()
-        } catch (e: Exception) {
-            Log.e("ScreenRecordingService", "Error stopping MediaProjection", e)
-        }
+        mediaProjection?.stop()
         mediaProjection = null
     }
 
