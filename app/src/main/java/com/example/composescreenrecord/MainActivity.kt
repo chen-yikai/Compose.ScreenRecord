@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.content.ContextCompat
 import com.example.composescreenrecord.ui.theme.ComposeScreenRecordTheme
@@ -86,6 +87,17 @@ fun ScreenRecord() {
         context,
         Manifest.permission.RECORD_AUDIO
     ) == PackageManager.PERMISSION_GRANTED
+
+    val captureAudio = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.CAPTURE_AUDIO_OUTPUT
+    ) == PackageManager.PERMISSION_GRANTED
+
+    val mediaProjectionForeground = ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
+    ) == PackageManager.PERMISSION_GRANTED
+
     val permissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -96,6 +108,10 @@ fun ScreenRecord() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
+        Text(
+            "audio: ${audioPermissions}\ncaptureAudio: ${captureAudio}\nmediaProjectionForeground: ${mediaProjectionForeground}\n",
+            textAlign = TextAlign.Center
+        )
         Button(
             onClick = {
                 if (recordState.isRecording) {
