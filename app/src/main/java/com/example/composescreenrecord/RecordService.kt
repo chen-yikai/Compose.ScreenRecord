@@ -3,20 +3,15 @@ package com.example.composescreenrecord
 import android.app.*
 import android.content.*
 import android.content.pm.ServiceInfo
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
+import android.hardware.display.*
 import android.media.*
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
-import android.os.Build
-import android.os.Environment
-import android.os.IBinder
-import android.util.Log
+import android.media.projection.*
+import android.os.*
+import android.util.*
 import androidx.core.app.NotificationCompat
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.update
-import java.io.File
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import java.io.*
 
 data class RecordState(
     val isRecording: Boolean = false,
@@ -32,51 +27,49 @@ fun timeFormatter(time: Long): String {
 
 class ScreenRecordingService : Service() {
     companion object {
-        val _recordState = MutableStateFlow(RecordState())
+        private val _recordState = MutableStateFlow(RecordState())
         val recordState: StateFlow<RecordState> = _recordState
     }
 
     private var mediaProjection: MediaProjection? = null
-    private var mediaRecorder: MediaRecorder? = null
     private var virtualDisplay: VirtualDisplay? = null
+    private var videoEncoder: MediaCodec? = null
+    private var audioEncoder: MediaCodec? = null
+    private var audioRecord: AudioRecord? = null
+    private var muxer: MediaMuxer? = null
+
+    private var videoTrackIndex = -1
+    private var audioTrackIndex = -1
+    private var muxerStarted = false
+    private var recordingJob: Job? = null
+
     private val mediaProjectionCallback = object : MediaProjection.Callback() {
         override fun onStop() {
-            _recordState.update { it.copy(isRecording = false) }
-            stopSelf()
+            stopRecording()
         }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val channelId = createNotificationChannel()
-
         val notification = NotificationCompat.Builder(this, channelId)
             .setContentTitle("Screen Recording")
             .setContentText("Recording in progress...")
             .setSmallIcon(android.R.drawable.ic_media_play)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(
-                1, notification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
-            )
-        } else {
-            startForeground(1, notification)
-        }
+        startForeground(1, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION)
 
         val resultCode =
             intent?.getIntExtra("resultCode", Activity.RESULT_CANCELED) ?: Activity.RESULT_CANCELED
         val data = intent?.getParcelableExtra<Intent>("data")
 
         if (resultCode == Activity.RESULT_OK && data != null) {
-            val mediaProjectionManager =
+            val projectionManager =
                 getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mediaProjectionManager.getMediaProjection(resultCode, data)
+            mediaProjection = projectionManager.getMediaProjection(resultCode, data)
             mediaProjection?.registerCallback(mediaProjectionCallback, null)
             startRecording()
         } else {
-            Log.e("ScreenRecordingService", "Invalid MediaProjection data")
             stopSelf()
         }
 
@@ -84,73 +77,169 @@ class ScreenRecordingService : Service() {
     }
 
     private fun createNotificationChannel(): String {
-        val channelId = "ScreenRecordingChannel"
-        val channel = NotificationChannel(
-            channelId,
-            "Screen Recording Service",
-            NotificationManager.IMPORTANCE_LOW
-        )
-        val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.createNotificationChannel(channel)
-        return channelId
+        val id = "ScreenRecordingChannel"
+        val channel =
+            NotificationChannel(id, "Screen Recording", NotificationManager.IMPORTANCE_LOW)
+        getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        return id
     }
 
     private fun startRecording() {
-        val file = File(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            "screen_recording_${System.currentTimeMillis()}.mp4"
-        )
+        val width = 720
+        val height = 1280
+        val dpi = resources.displayMetrics.densityDpi
+        val outputFile =
+            File(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                "recorded_${System.currentTimeMillis()}.mp4"
+            )
 
-        mediaRecorder = MediaRecorder(this).apply {
-            setVideoSource(MediaRecorder.VideoSource.SURFACE)
-            setAudioSource(MediaRecorder.AudioSource.MIC)
-            setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-            setOutputFile(file.absolutePath)
-            setVideoEncoder(MediaRecorder.VideoEncoder.H264)
-            setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setAudioSamplingRate(44100)
-            setAudioEncodingBitRate(128000)
-            setVideoEncodingBitRate(8 * 1000 * 1000)
-            setVideoFrameRate(30)
-            val displayMetrics = resources.displayMetrics
-            setVideoSize(displayMetrics.widthPixels, displayMetrics.heightPixels)
-            prepare()
+        val videoFormat = MediaFormat.createVideoFormat("video/avc", width, height).apply {
+            setInteger(
+                MediaFormat.KEY_COLOR_FORMAT,
+                MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
+            )
+            setInteger(MediaFormat.KEY_BIT_RATE, 5_000_000)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
-        val displayMetrics = resources.displayMetrics
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "ScreenRecorder",
-            displayMetrics.widthPixels,
-            displayMetrics.heightPixels,
-            displayMetrics.densityDpi,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            mediaRecorder?.surface,
-            null,
-            null
+        videoEncoder = MediaCodec.createEncoderByType("video/avc").apply {
+            configure(videoFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        }
+
+        val inputSurface = videoEncoder!!.createInputSurface()
+        videoEncoder!!.start()
+
+        val audioFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", 44100, 2).apply {
+            setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
+            setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+        }
+
+        audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm").apply {
+            configure(audioFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            start()
+        }
+
+        val config = AudioPlaybackCaptureConfiguration.Builder(mediaProjection!!)
+            .addMatchingUsage(AudioAttributes.USAGE_MEDIA)
+            .addMatchingUsage(AudioAttributes.USAGE_GAME)
+            .build()
+
+        val audioInFormat = AudioFormat.Builder()
+            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+            .setSampleRate(44100)
+            .setChannelMask(AudioFormat.CHANNEL_IN_STEREO)
+            .build()
+
+        val minBuffer = AudioRecord.getMinBufferSize(
+            44100,
+            AudioFormat.CHANNEL_IN_STEREO,
+            AudioFormat.ENCODING_PCM_16BIT
         )
+
+        audioRecord = AudioRecord.Builder()
+            .setAudioPlaybackCaptureConfig(config)
+            .setAudioFormat(audioInFormat)
+            .setBufferSizeInBytes(minBuffer)
+            .build()
+
+        muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "ScreenCapture",
+            width, height, dpi,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            inputSurface, null, null
+        )
+
+        audioRecord?.startRecording()
+
         _recordState.update {
             it.copy(
                 isRecording = true,
                 startRecording = System.currentTimeMillis()
             )
         }
-        mediaRecorder?.start()
+
+        recordingJob = CoroutineScope(Dispatchers.IO).launch {
+            val videoInfo = MediaCodec.BufferInfo()
+            val audioInfo = MediaCodec.BufferInfo()
+            val audioBuffer = ByteArray(minBuffer)
+
+            while (isActive) {
+                // Handle video
+                val outIndex = videoEncoder!!.dequeueOutputBuffer(videoInfo, 10000)
+                if (outIndex >= 0) {
+                    val encodedData = videoEncoder!!.getOutputBuffer(outIndex)!!
+                    if ((videoInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0) {
+                        if (!muxerStarted) {
+                            videoTrackIndex = muxer!!.addTrack(videoEncoder!!.outputFormat)
+                            audioTrackIndex = muxer!!.addTrack(audioEncoder!!.outputFormat)
+                            muxer!!.start()
+                            muxerStarted = true
+                        }
+                        muxer!!.writeSampleData(videoTrackIndex, encodedData, videoInfo)
+                    }
+                    videoEncoder!!.releaseOutputBuffer(outIndex, false)
+                }
+
+                val read = audioRecord!!.read(audioBuffer, 0, audioBuffer.size)
+                if (read > 0) {
+                    val inputIndex = audioEncoder!!.dequeueInputBuffer(10000)
+                    if (inputIndex >= 0) {
+                        val inputBuffer = audioEncoder!!.getInputBuffer(inputIndex)!!
+                        inputBuffer.clear()
+                        val length = minOf(read, inputBuffer.capacity())
+                        inputBuffer.put(audioBuffer, 0, length)
+                        audioEncoder!!.queueInputBuffer(
+                            inputIndex,
+                            0,
+                            length,
+                            System.nanoTime() / 1000,
+                            0
+                        )
+                    }
+                }
+
+                var outAudioIndex = audioEncoder!!.dequeueOutputBuffer(audioInfo, 0)
+                while (outAudioIndex >= 0) {
+                    val outBuf = audioEncoder!!.getOutputBuffer(outAudioIndex)!!
+                    if ((audioInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) == 0 && muxerStarted) {
+                        muxer!!.writeSampleData(audioTrackIndex, outBuf, audioInfo)
+                    }
+                    audioEncoder!!.releaseOutputBuffer(outAudioIndex, false)
+                    outAudioIndex = audioEncoder!!.dequeueOutputBuffer(audioInfo, 0)
+                }
+            }
+        }
+    }
+
+    private fun stopRecording() {
+        _recordState.update { it.copy(isRecording = false, startRecording = 0L) }
+        recordingJob?.cancel()
+
+        try {
+            audioRecord?.stop()
+            audioRecord?.release()
+            audioEncoder?.stop()
+            audioEncoder?.release()
+            videoEncoder?.stop()
+            videoEncoder?.release()
+            virtualDisplay?.release()
+            mediaProjection?.stop()
+            muxer?.stop()
+            muxer?.release()
+        } catch (e: Exception) {
+            Log.e("ScreenRecording", "Error stopping", e)
+        }
+
+        stopSelf()
     }
 
     override fun onDestroy() {
+        stopRecording()
         super.onDestroy()
-        _recordState.update {
-            it.copy(isRecording = false, startRecording = 0L)
-        }
-        try {
-            mediaRecorder?.stop()
-        } catch (_: Exception) {
-        }
-        mediaRecorder?.release()
-        virtualDisplay?.release()
-        mediaProjection?.unregisterCallback(mediaProjectionCallback)
-        mediaProjection?.stop()
-        mediaProjection = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
