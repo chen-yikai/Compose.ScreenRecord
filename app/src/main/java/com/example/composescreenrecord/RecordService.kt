@@ -3,6 +3,7 @@ package com.example.composescreenrecord
 import android.app.*
 import android.content.*
 import android.content.pm.ServiceInfo
+import android.content.res.Resources
 import android.hardware.display.*
 import android.media.*
 import android.media.projection.*
@@ -85,8 +86,9 @@ class ScreenRecordingService : Service() {
     }
 
     private fun startRecording() {
-        val width = 720
-        val height = 1280
+        val displayMetrics = Resources.getSystem().displayMetrics
+        val width = displayMetrics.widthPixels
+        val height = displayMetrics.heightPixels
         val dpi = resources.displayMetrics.densityDpi
         val outputFile =
             File(
@@ -100,7 +102,7 @@ class ScreenRecordingService : Service() {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
             setInteger(MediaFormat.KEY_BIT_RATE, 5_000_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
