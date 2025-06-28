@@ -101,8 +101,8 @@ class ScreenRecordingService : Service() {
                 MediaFormat.KEY_COLOR_FORMAT,
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
-            setInteger(MediaFormat.KEY_BIT_RATE, 5_000_000)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
+            setInteger(MediaFormat.KEY_BIT_RATE, width * height * 5)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
@@ -116,6 +116,7 @@ class ScreenRecordingService : Service() {
         val audioFormat = MediaFormat.createAudioFormat("audio/mp4a-latm", 44100, 2).apply {
             setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             setInteger(MediaFormat.KEY_BIT_RATE, 128000)
+            setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 1024 * 1024)
         }
 
         audioEncoder = MediaCodec.createEncoderByType("audio/mp4a-latm").apply {
@@ -170,7 +171,6 @@ class ScreenRecordingService : Service() {
             val audioBuffer = ByteArray(minBuffer)
 
             while (isActive) {
-                // Handle video
                 val outIndex = videoEncoder!!.dequeueOutputBuffer(videoInfo, 10000)
                 if (outIndex >= 0) {
                     val encodedData = videoEncoder!!.getOutputBuffer(outIndex)!!
