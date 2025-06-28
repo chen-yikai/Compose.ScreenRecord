@@ -1,7 +1,9 @@
 package com.example.composescreenrecord
 
+import android.Manifest
 import android.app.*
 import android.content.*
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.content.res.Resources
 import android.hardware.display.*
@@ -10,6 +12,7 @@ import android.media.projection.*
 import android.os.*
 import android.util.*
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import java.io.*
@@ -102,7 +105,7 @@ class ScreenRecordingService : Service() {
                 MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface
             )
             setInteger(MediaFormat.KEY_BIT_RATE, width * height * 5)
-            setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            setInteger(MediaFormat.KEY_FRAME_RATE, 60)
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
         }
 
@@ -141,11 +144,16 @@ class ScreenRecordingService : Service() {
             AudioFormat.ENCODING_PCM_16BIT
         )
 
-        audioRecord = AudioRecord.Builder()
-            .setAudioPlaybackCaptureConfig(config)
-            .setAudioFormat(audioInFormat)
-            .setBufferSizeInBytes(minBuffer)
-            .build()
+        if (ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+            audioRecord = AudioRecord.Builder()
+                .setAudioPlaybackCaptureConfig(config)
+                .setAudioFormat(audioInFormat)
+                .setBufferSizeInBytes(minBuffer)
+                .build()
 
         muxer = MediaMuxer(outputFile.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
